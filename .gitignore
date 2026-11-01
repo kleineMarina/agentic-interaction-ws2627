@@ -6,3 +6,6 @@
 
 # Run logs
 logs/
+
+# Python cache
+__pycache__/
