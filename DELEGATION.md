@@ -4,7 +4,7 @@ Which actions the agent may carry out on its own (**alone**) and which need my a
 
 | # | Action | Decision | Justification |
 |---|---|---|---|
-| 1 | Read the appointments of a day | alone | Alone if the calendar only contains work or study appointments: reading changes nothing and is needed for almost every task. If it also contained private appointments, I would require approval, as for notes.  |
+| 1 | Read the appointments of a day | alone | Alone if the calendar only contains work or study appointments, because reading it changes nothing. If it also contained private appointments, I would require approval, as for notes.  |
 | 2 | Look up the weather | alone | Only reads data and contains no sensitive information. |
 | 3 | Search train connections | alone | Only reads data and contains no sensitive information. |
 | 4 | Read notes | approval | Only reads data, but notes may contain sensitive or private information. |
