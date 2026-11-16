@@ -1,20 +1,25 @@
-"""Agent loop: model -> tool -> model."""
+"""Agent loop: model -> tools -> model, until a final answer or the step limit."""
 
 import json
 import time
 from datetime import date
 
-from openai import OpenAI
+from openai import OpenAI, BadRequestError
 
 from agent.tools import CALENDAR_TOOL, get_calendar_day
 
 SYSTEM_PROMPT = (
     'You are a calendar assistant. Use the tool get_calendar_day to look up '
     'appointments and never make up appointments. If the tool finds no data '
-    'for a day, say so. Answer in the language of the question. '
+    'for a day, say so. '
+    'If the tool returns an error, tell the user that the calendar could not '
+    'be read for that day; never treat an error as "no appointments". '
+    'Answer in the language of the question. '
     'Answer in plain text without Markdown tables. '
     'Today is {today}. '
 )
+
+MAX_STEPS = 10
 
 
 def run_tool(tool_call, config, logger):
@@ -47,7 +52,7 @@ def run_tool(tool_call, config, logger):
     
 
 def run_agent(question, config, logger):
-    """Answers a question: model -> tool -> model. Returns the final answer."""
+    """Agent loop: model -> tools -> model, until a final answer or the step limit."""
     start = time.perf_counter()
     logger.log('user_task', args={'task': question})
 
@@ -56,50 +61,64 @@ def run_agent(question, config, logger):
         {'role': 'system', 'content': SYSTEM_PROMPT.format(today=date.today().isoformat())},
         {'role': 'user', 'content': question},
     ]
+  
+    step_count = 0
+    final_answer = None
+    while step_count < MAX_STEPS and final_answer is None:
+        # Each step: ask the model with everything so far
+        model_ok = True
+        try:
+            response = client.chat.completions.create(
+                model=config.MODEL, messages=messages, tools=[CALENDAR_TOOL]
+            )
+            message = response.choices[0].message
+        except BadRequestError as e:
+            if e.code != 'output_parse_failed':
+                raise
+            model_ok = False
+            logger.log('error', ok=False,
+                       error=f'step {step_count + 1}: model output could not be parsed, retrying')
 
-    # 1st model call: the model decides whether it needs the tool
-    response = client.chat.completions.create(
-        model=config.MODEL, messages=messages, tools=[CALENDAR_TOOL]
-    )
-    message = response.choices[0].message
+        if model_ok: 
+            if message.tool_calls:
+                # the model's request has to be in the history so the results can be matched to it
+                messages.append({
+                    'role': 'assistant',
+                    'content': message.content,
+                    'tool_calls': [
+                        {
+                            'id': tool_call.id,
+                            'type': 'function',
+                            'function': {
+                                'name': tool_call.function.name,
+                                'arguments': tool_call.function.arguments,
+                            },
+                        }
+                        for tool_call in message.tool_calls
+                    ],
+                })
 
-    if message.tool_calls:
-        # the model's request has to be in the history so the results can be matched to it
-        messages.append({
-            'role': 'assistant',
-            'content': message.content,
-            'tool_calls': [
-                {
-                    'id': tool_call.id,
-                    'type': 'function',
-                    'function': {
-                        'name': tool_call.function.name,
-                        'arguments': tool_call.function.arguments,
-                    },
-                }
-                for tool_call in message.tool_calls
-            ],
-        })
-        for tool_call in message.tool_calls:
-            messages.append({
-                'role': 'tool',
-                'tool_call_id': tool_call.id,
-                'content': run_tool(tool_call, config, logger),
-            })
+                for tool_call in message.tool_calls:
+                    messages.append({
+                        'role': 'tool',
+                        'tool_call_id': tool_call.id,
+                        'content': run_tool(tool_call, config, logger),
+                    })
 
-        # 2nd model call: the model writes the answer from the tool results
-        response = client.chat.completions.create(
-            model=config.MODEL, messages=messages, tools=[CALENDAR_TOOL], tool_choice='none'
-        )
-        message = response.choices[0].message
+            else:
+                if message.content:
+                    final_answer = message.content
+                else:
+                    # gpt-oss sometimes returns neither a tool call nor text: log it and retry this step
+                    logger.log('error', ok=False,
+                               error=f'step {step_count + 1}: model returned an empty reply, retrying')
+        step_count += 1
 
-    answer = message.content
-    # The model may return no text: use a fallback answer and mark the run as not ok
-    ok = bool(answer)
-    if not ok:
-        answer = 'Sorry, no answer could be generated.'
+    if final_answer is None:
+        raise RuntimeError(f'step limit reached: no answer after {MAX_STEPS} steps')
+
+    # Only reached with a real answer: empty replies are retried inside the loop
     duration_ms = round((time.perf_counter() - start) * 1000)
-    logger.log('final', ok=ok, duration_ms=duration_ms,
-               error=None if ok else 'model returned an empty answer')
+    logger.log('final', ok=True, duration_ms=duration_ms)
 
-    return answer
+    return final_answer
