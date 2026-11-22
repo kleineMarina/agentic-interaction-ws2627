@@ -6,14 +6,18 @@ from datetime import date
 
 from openai import OpenAI, BadRequestError
 
-from agent.tools import CALENDAR_TOOL, get_calendar_day
+from agent.tools import CALENDAR_TOOL, get_calendar_day, WEATHER_TOOL, get_weather, TRAIN_TOOL, get_train_connection
 
 SYSTEM_PROMPT = (
-    'You are a calendar assistant. Use the tool get_calendar_day to look up '
-    'appointments and never make up appointments. If the tool finds no data '
-    'for a day, say so. '
-    'If the tool returns an error, tell the user that the calendar could not '
-    'be read for that day; never treat an error as "no appointments". '
+    'You are a day and travel planning assistant. '
+    'Use get_calendar_day for appointments, get_weather for the weather forecast '
+    'and get_train_connection for train connections. '
+    'Give cities by their local name, e.g. München instead of Munich. '
+    'Only use information returned by the tools; never make up appointments, '
+    'weather or train connections. '
+    'If a tool finds no data for a day or place, tell the user that no data is '
+    'available; no data does not mean no appointments, no rain or no trains. '
+    'If a tool returns an error, tell the user that the information could not be read. '
     'Answer in the language of the question. '
     'Answer in plain text without Markdown tables. '
     'Today is {today}. '
@@ -38,6 +42,10 @@ def run_tool(tool_call, config, logger):
     try:
         if name == 'get_calendar_day':
             result = get_calendar_day(args['date'], config.DATA_BASE_URL)
+        elif name == 'get_weather':
+            result = get_weather(args['date'], args['city'], config.DATA_BASE_URL)
+        elif name == 'get_train_connection':
+            result = get_train_connection(args['date'],args['start_location'], args['end_location'], config.DATA_BASE_URL)
         else:
             result = {'error': f'unknown tool: {name}'}
     except Exception as e:
@@ -69,7 +77,7 @@ def run_agent(question, config, logger):
         model_ok = True
         try:
             response = client.chat.completions.create(
-                model=config.MODEL, messages=messages, tools=[CALENDAR_TOOL]
+                model=config.MODEL, messages=messages, tools=[CALENDAR_TOOL, WEATHER_TOOL, TRAIN_TOOL]
             )
             message = response.choices[0].message
         except BadRequestError as e:
